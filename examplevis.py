@@ -10,19 +10,51 @@ class ExVisCircle:
         self._color = color
         self._radius = 100
         self._thickness = 4
+        self._image_type = "rgb"
+        self._jpeg_quality = 92
+        self._video_options = {}
 
         cv2.circle(self._image, self._center, self._radius, self._color, self._thickness)
 
     def getSize(self):
         return self._image.shape[:2]
-
-    def getRawImage(self):
-        return self._image.flatten()
         
-    def getJpegImage(self, quality=92):
-        result, encoded_img = cv2.imencode('.jpg', self._image, (cv2.IMWRITE_JPEG_QUALITY, quality))
+    def setImageType(self, itype, options={}):
+        if self._image_type == itype:
+            return
+        
+        self._image_type = itype
+        if type == "rgb":
+            pass # do nothing
+        elif type == "jpeg":
+            self._jpeg_quality = options.get("quality", 92)
+        elif type == "h264":
+            self._video_options = options
+
+    def getImageType(self):
+        return self._image_type
+
+    def getFrame(self):
+        if self._image_type == "rgb":
+            return self._getRawImage()
+        elif self._image_type == "jpeg":
+            return self._getJpegImage()
+        elif self._image_type == "h264":
+            return self._getH264VideoFrame()
+        else:
+            return None
+
+    def _getRawImage(self):
+        rgb_img = cv2.cvtColor(self._image, cv2.COLOR_BGR2RGB)
+        return rgb_img.flatten()
+        
+    def _getJpegImage(self):
+        result, encoded_img = cv2.imencode('.jpg', self._image, (cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality))
         if result:
             return encoded_img
+        return None
+        
+    def _getH264VideoFrame(self):
         return None
 
 
@@ -44,9 +76,10 @@ class ExVisViewAdapter:
         #  - st:    time (milliseconds as integer)
         #  - key:   keyframe or deltaframe ("key" or "delta")
     
+        mime_types = {"rgb": "image/rgb24", "jpeg": "image/jpeg", "h264": "video/mp4"}
         height, width = self._view.getSize()
         return dict(
-            type="image/jpeg", #"image/rgb24",
+            type=mime_types[self._view.getImageType()],
             codec="",
             w=width,
             h=height,
@@ -66,9 +99,11 @@ class ExVisViewAdapter:
         event_type = event["type"]
         print(f"Event: {event_type}")
         if event_type == "LeftButtonPress":
+            frame_data = self._view.getFrame()
+            self.streamer.push_content(self.area_name, self._get_metadata(), frame_data.data)
             # Raw RGB
             #pixels = self._view.getRawImage()
             #self.streamer.push_content(self.area_name, self._get_metadata(), pixels.data)
             # JPEG
-            jpeg_image = self._view.getJpegImage(quality=92)
-            self.streamer.push_content(self.area_name, self._get_metadata(), jpeg_image.data)
+            #jpeg_image = self._view.getJpegImage(quality=92)
+            #self.streamer.push_content(self.area_name, self._get_metadata(), jpeg_image.data)

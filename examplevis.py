@@ -18,6 +18,12 @@ class ExVisCircle:
 
     def getRawImage(self):
         return self._image.flatten()
+        
+    def getJpegImage(self, quality=92):
+        result, encoded_img = cv2.imencode('.jpg', self._image, (cv2.IMWRITE_JPEG_QUALITY, quality))
+        if result:
+            return encoded_img
+        return None
 
 
 # ViewAdapter class for Controller RCA
@@ -40,7 +46,7 @@ class ExVisViewAdapter:
     
         height, width = self._view.getSize()
         return dict(
-            type="image/rgb24",
+            type="image/jpeg", #"image/rgb24",
             codec="",
             w=width,
             h=height,
@@ -61,9 +67,8 @@ class ExVisViewAdapter:
         print(f"Event: {event_type}")
         if event_type == "LeftButtonPress":
             # Raw RGB
-            pixels = self._view.getRawImage()
-            self.streamer.push_content(self.area_name, self._get_metadata(), pixels.data)
+            #pixels = self._view.getRawImage()
+            #self.streamer.push_content(self.area_name, self._get_metadata(), pixels.data)
             # JPEG
-            #jpeg_image = BytesIO()
-            #self._view.save(jpeg_image, "jpeg")
-            #self.streamer.push_content(self.area_name, self._get_metadata(), memoryview(jpeg_image.getvalue()))
+            jpeg_image = self._view.getJpegImage(quality=92)
+            self.streamer.push_content(self.area_name, self._get_metadata(), jpeg_image.data)

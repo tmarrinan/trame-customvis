@@ -21,7 +21,7 @@ def main():
         ctrl.rc_area_register(view_handler)
     
     # Define webpage layout
-    state.active_display_mode = "raw-image" # RGB: "raw-image", JPEG: "image", MP4: "media-source"
+    state.active_display_mode = "image" # RGB: "raw-image", JPEG: "image", MP4: "media-source"
     with SinglePageLayout(server) as layout:
         layout.title.set_text("Custom-Vis")
         with layout.content:

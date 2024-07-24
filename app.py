@@ -1,18 +1,14 @@
 from trame.app import get_server
 from trame.widgets import vuetify, rca
 from trame.ui.vuetify import SinglePageLayout
-import cv2
-import numpy as np
+from examplevis import ExampleCircle
 import time
 
 def main():
-    print(f"Using OpenCV verions {cv2.__version__}")
-    
     # Create image with circle
     init_w = 800
     init_h = 600
-    image = np.zeros((init_h,init_w,3), np.uint8)
-    cv2.circle(image, (400, 300), 200, (128, 15, 196), 4) # image, center, radius, color, thickness
+    vis = ExampleCircle(init_w, init_h, (128, 15, 196))
     
     # Create Trame server
     server = get_server(client_type="vue2")
@@ -21,7 +17,7 @@ def main():
 
     @ctrl.add("on_server_ready")
     def init_rca(**kwargs):
-        view_handler = ViewAdapter(image, "view")
+        view_handler = ViewAdapter(vis, "view")
         ctrl.rc_area_register(view_handler)
     
     # Define webpage layout
@@ -37,8 +33,8 @@ def main():
 
 # ViewAdapter Class for Controller RCA
 class ViewAdapter:
-    def __init__(self, cv_image, name):
-        self._view = cv_image
+    def __init__(self, circle_vis, name):
+        self._view = circle_vis
         self._streamer = None
         self._last_meta = None
         self.area_name = name
@@ -53,7 +49,7 @@ class ViewAdapter:
         #  - st:    time (milliseconds as integer)
         #  - key:   keyframe or deltaframe ("key" or "delta")
     
-        height, width, channels = self._view.shape
+        height, width = self._view.getSize()
         return dict(
             type="image/rgb24",
             codec="",
@@ -76,7 +72,7 @@ class ViewAdapter:
         print(f"Event: {event_type}")
         if event_type == "LeftButtonPress":
             # Raw RGB
-            pixels = self._view.flatten()
+            pixels = self._view.getRawImage()
             self.streamer.push_content(self.area_name, self._get_metadata(), pixels.data)
             # JPEG
             #jpeg_image = BytesIO()

@@ -17,14 +17,33 @@ def main():
 
     # Register RCA view with Trame controller
     @ctrl.add("on_server_ready")
-    def init_rca(**kwargs):
+    def initRca(**kwargs):
         view_handler = ExVisViewAdapter(vis, "view")
         ctrl.rc_area_register(view_handler)
+        
+    # Callback for encoder type change
+    def uiStateEncoderUpdate(stream_encoder, **kwargs):
+        print(stream_encoder)
+        #vis.setImageType(stream_encoder)
+    
+    # Register callback
+    state.change("stream_encoder")(uiStateEncoderUpdate)
     
     # Define webpage layout
     state.active_display_mode = "raw-image" # RGB: "raw-image", JPEG: "image", MP4: "media-source"
     with SinglePageLayout(server) as layout:
         layout.title.set_text("Custom-Vis")
+        with layout.toolbar:
+            vuetify.VSpacer()
+            vuetify.VSelect(
+                label="Encoder",
+                v_model=("stream_encoder", "rgb"),
+                items=(
+                    "['rgb', 'jpeg', 'h264']",
+                ),
+                hide_details=True,
+                dense=True,
+            )
         with layout.content:
             with vuetify.VContainer(fluid=True, classes="pa-0 fill-height",):
                 view = rca.RemoteControlledArea(name="view", display=("active_display_mode", "image"))

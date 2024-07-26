@@ -13,8 +13,8 @@ class ExVisCircle:
         self._color = color
         self._radius = 100
         self._thickness = 4
-        self._velocity_x = 200
-        self._velocity_y = 125
+        self._velocity_x = 100
+        self._velocity_y = 60
         self._image_type = "rgb"
         self._jpeg_quality = 92
         self._video_options = {}
@@ -38,11 +38,11 @@ class ExVisCircle:
             return
         
         self._image_type = itype
-        if type == "rgb":
+        if self._image_type == "rgb":
             pass # do nothing
-        elif type == "jpeg":
+        elif self._image_type == "jpeg":
             self._jpeg_quality = options.get("quality", 92)
-        elif type == "h264":
+        elif self._image_type == "h264":
             self._video_options = options
 
     def getFrame(self):
@@ -152,6 +152,7 @@ class ExVisViewAdapter:
         width = int(size.get("w", 400))
         height = int(size.get("h", 300))
         print(f"new size: {width}x{height}")
+        self._view.setSize(width, height)
         
     def on_interaction(self, origin, event):
         event_type = event["type"]

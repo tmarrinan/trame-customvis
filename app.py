@@ -8,7 +8,6 @@ def main():
     init_w = 800
     init_h = 600
     vis = ExVisCircle(init_w, init_h, (196, 15, 128)) # color in BGR
-    #vis.setImageType("jpeg")
     
     # Create Trame server
     server = get_server(client_type="vue2")
@@ -24,7 +23,15 @@ def main():
     # Callback for encoder type change
     def uiStateEncoderUpdate(stream_encoder, **kwargs):
         print(stream_encoder)
-        #vis.setImageType(stream_encoder)
+        if stream_encoder == "rgb":
+            state.active_display_mode = "raw-image"
+            vis.setImageType(stream_encoder)
+        elif stream_encoder == "jpeg":
+            state.active_display_mode = "image"
+            vis.setImageType(stream_encoder, options={"quality": 90})
+        elif stream_encoder == "h264":
+            state.active_display_mode = "media-source"
+            vis.setImageType(stream_encoder)
     
     # Register callback
     state.change("stream_encoder")(uiStateEncoderUpdate)

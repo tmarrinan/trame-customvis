@@ -2,12 +2,14 @@ from trame.app import get_server
 from trame.widgets import vuetify, rca
 from trame.ui.vuetify import SinglePageLayout
 from examplevis import ExVisCircle, ExVisViewAdapter
+from examplevulkan import ExVkCircle
 
 def main():
     # Create image with circle
     init_w = 800
     init_h = 600
     vis = ExVisCircle(init_w, init_h, (196, 15, 128)) # color in BGR
+    test = ExVkCircle(init_w, init_h, (128, 15, 196)) # color in RGB
     
     # Create Trame server
     server = get_server(client_type="vue2")
@@ -19,6 +21,10 @@ def main():
     def initRca(**kwargs):
         view_handler = ExVisViewAdapter(vis, "view")
         ctrl.rc_area_register(view_handler)
+    
+    @ctrl.trigger("my_method")
+    def on_method(*args, **kwargs):
+        print(f"server::method {args} {kwargs}")
         
     # Callback for encoder type change
     def uiStateEncoderUpdate(stream_encoder, **kwargs):
@@ -52,7 +58,7 @@ def main():
                 dense=True,
             )
         with layout.content:
-            with vuetify.VContainer(fluid=True, classes="pa-0 fill-height",):
+            with vuetify.VContainer(v_mutate="trigger('my_method')", fluid=True, classes="pa-0 fill-height",):
                 view = rca.RemoteControlledArea(name="view", display=("active_display_mode", "image"))
     
     # Start server

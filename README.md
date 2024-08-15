@@ -12,5 +12,10 @@ Example application demonstrating streaming custom visualizations using [Trame](
 * `conda install -c conda-forge trame-rca`
 * `conda install -c conda-forge opencv`
 
+##### Optional (Vulkan support)
+
+* `pip install vulkan`
+* `pip install pyGLM`
+
 ### Run
 * `python app.py`

@@ -2,7 +2,6 @@ import time
 import asyncio
 import cv2
 import numpy as np
-from trame.app import asynchronous
 
 # Custom visualization class for drawing a circle
 class ExVisCircle:
@@ -113,7 +112,8 @@ class ExVisViewAdapter:
         self.area_name = name
         self._target_fps = 30
         
-        asynchronous.create_task(self._animate())
+        #asynchronous.create_task(self._animate())
+        asyncio.create_task(self._animate())
         
     def _get_metadata(self):
         # Dictionary:
@@ -158,5 +158,6 @@ class ExVisViewAdapter:
         event_type = event["type"]
         print(f"Event: {event_type}")
         if event_type == "LeftButtonPress":
-            frame_data = self._view.getFrame()
-            self._streamer.push_content(self.area_name, self._get_metadata(), frame_data.data)
+            pass
+            #frame_data = self._view.getFrame()
+            #self._streamer.push_content(self.area_name, self._get_metadata(), frame_data.data)

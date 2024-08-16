@@ -390,7 +390,11 @@ class ExVkCircle:
                                                    pAllocator=None)
 
     def _createGraphicsPipeline(self):
-        pass
+        vert_shader_module = self._createShaderModule("./shaders/compiled/vertex_color.vert.spv")
+        frag_shader_module = self._createShaderModule("./shaders/compiled/vertex_color.frag.spv")
+        print("Vk Create Shader Modules: success")
+        
+        
     
     def _findMemoryTypeIndex(self, supported_memory_indices, req_properties):
         for i in range(self._device_mem_props.memoryTypeCount):
@@ -593,6 +597,20 @@ class ExVkCircle:
                                           pAllocator=None)
 
         return {"image": image, "memory": memory, "image_view": image_view}
+
+    def _createShaderModule(self, filename):
+        file = open(filename, 'rb')
+        shader_src = file.read()
+        shader_module_info = vk.VkShaderModuleCreateInfo(
+            sType = vk.VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            codeSize=len(shader_src),
+            pCode=shader_src,
+            flags=0
+        )
+        
+        return vk.vkCreateShaderModule(device=self._logical_device, 
+                                       pCreateInfo=shader_module_info,
+                                       pAllocator=None)
 
     """
     def _initMesh(self):

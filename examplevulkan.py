@@ -25,6 +25,7 @@ class ExVkCircle:
         self._gpu_video_encode = False
         self._start_time = round(time.time_ns() / 1000000)
         self._prev_time = self._start_time
+        self._mvp_transform = glm.mat4() # projection * model * view
         # private vulkan variables
         self._instance = None
         self._physical_device = None
@@ -46,7 +47,10 @@ class ExVkCircle:
         self._depth_attachment = {}
         self._depth_image_view = None
         self._framebuffer = None
-        
+        self._pipeline_layout = None
+        self._graphics_pipeline = None
+        self._command_buffer = None
+
         # initialie
         self._initVulkan()
 
@@ -64,9 +68,9 @@ class ExVkCircle:
         self._createRenderPass()
         self._createFramebuffers()
         self._createGraphicsPipeline()
-        #self._createDescriptorPool()
-        #self._createDescriptorSet()
-        #self._createCommandBuffers()
+        self._createDescriptorPool()
+        self._createDescriptorSet()
+        self._createCommandBuffers()
     
     def _createInstance(self):
         # Vulkan: application information
@@ -390,12 +394,315 @@ class ExVkCircle:
                                                    pAllocator=None)
 
     def _createGraphicsPipeline(self):
+        # Load in vertex and fragment shaders
         vert_shader_module = self._createShaderModule("./shaders/compiled/vertex_color.vert.spv")
         frag_shader_module = self._createShaderModule("./shaders/compiled/vertex_color.frag.spv")
         print("Vk Create Shader Modules: success")
         
+        # Vulkan: set up shader stage information
+        vertex_shader_info = vk.VkPipelineShaderStageCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            stage=vk.VK_SHADER_STAGE_VERTEX_BIT,
+            module=vert_shader_module,
+            pName="main",
+            pSpecializationInfo=None,
+            flags=0
+        )
+
+        fragment_shader_info = vk.VkPipelineShaderStageCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            stage=vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+            module=frag_shader_module,
+            pName="main",
+            pSpecializationInfo=None,
+            flags=0
+        )
         
-    
+        # Vulkan: vertex input state information
+        vertex_input_info = vk.VkPipelineVertexInputStateCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+            vertexBindingDescriptionCount=1,
+            pVertexBindingDescriptions=[self._vertex_binding_desc],
+            vertexAttributeDescriptionCount=len(self._vertex_attribs_desc),
+            pVertexAttributeDescriptions=self._vertex_attribs_desc,
+            flags=0
+        )
+        
+        # Vulkan: input assemble information
+        input_assembly_info = vk.VkPipelineInputAssemblyStateCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+            topology=vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+            primitiveRestartEnable=vk.VK_FALSE,
+            flags=0
+        )
+        
+        # Vulkan: viewport and scissor information
+        viewport = vk.VkViewport(
+            x=0.0,
+            y=0.0,
+            width=self._width,
+            height=self._height,
+            minDepth=0.0,
+            maxDepth=1.0
+        )
+        scissor = vk.VkRect2D(
+            offset=vk.VkOffset2D(x=0, y=0),
+            extent=vk.VkExtent2D(width=self._width, height=self._height)
+        )
+        viewport_info = vk.VkPipelineViewportStateCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+            viewportCount=1,
+            pViewports=[viewport],
+            scissorCount=1,
+            pScissors=[scissor],
+            flags=0
+        )
+        
+        # Vulkan: rasterization information
+        rasterization_info = vk.VkPipelineRasterizationStateCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+            depthClampEnable=vk.VK_FALSE,
+            rasterizerDiscardEnable=vk.VK_FALSE,
+            polygonMode=vk.VK_POLYGON_MODE_FILL,
+            cullMode=vk.VK_CULL_MODE_BACK_BIT,
+		    frontFace=vk.VK_FRONT_FACE_COUNTER_CLOCKWISE,
+            depthBiasEnable=vk.VK_FALSE,
+            depthBiasConstantFactor=0.0,
+            depthBiasClamp=0.0,
+            depthBiasSlopeFactor=0.0,
+            lineWidth=1.0,
+            flags=0
+        )
+        
+        # Vulkan: multisampling information
+        multisample_info = vk.VkPipelineMultisampleStateCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+            rasterizationSamples=vk.VK_SAMPLE_COUNT_1_BIT,
+            sampleShadingEnable=vk.VK_FALSE,
+            minSampleShading=1.0,
+            alphaToCoverageEnable=vk.VK_FALSE,
+            alphaToOneEnable=vk.VK_FALSE,
+            flags=0
+        )
+        
+        # Vulkan: color blending information
+        color_blend_attachment = vk.VkPipelineColorBlendAttachmentState(
+            blendEnable=vk.VK_FALSE,
+            srcColorBlendFactor=vk.VK_BLEND_FACTOR_ONE,
+            dstColorBlendFactor=vk.VK_BLEND_FACTOR_ZERO,
+            colorBlendOp=vk.VK_BLEND_OP_ADD,
+            srcAlphaBlendFactor=vk.VK_BLEND_FACTOR_ONE,
+            dstAlphaBlendFactor=vk.VK_BLEND_FACTOR_ZERO,
+            alphaBlendOp=vk.VK_BLEND_OP_ADD,
+            colorWriteMask=vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT
+        )
+        color_blend_info = vk.VkPipelineColorBlendStateCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+            logicOpEnable=vk.VK_FALSE,
+            logicOp=vk.VK_LOGIC_OP_COPY,
+            attachmentCount=1,
+            pAttachments=[color_blend_attachment],
+            blendConstants=[0.0, 0.0, 0.0, 0.0],
+            flags=0
+        )
+        
+        # Vulkan:
+        depth_stencil_info = vk.VkPipelineDepthStencilStateCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+            depthTestEnable=vk.VK_TRUE,
+            depthWriteEnable=vk.VK_TRUE,
+            depthCompareOp=vk.VK_COMPARE_OP_LESS_OR_EQUAL,
+            back=vk.VkStencilOpState(compareOp=vk.VK_COMPARE_OP_ALWAYS),
+            flags=0
+        )
+        
+        # Vulkan:
+        dynamic_info = vk.VkPipelineDynamicStateCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+            dynamicStateCount=2,
+            pDynamicStates=[vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR],
+            flags=0
+        )
+        
+        # Vulkan: pipeline layout information
+        """
+        layout_information = vk.VkDescriptorSetLayoutCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            bindingCount=0,
+            pBindings=[],
+            flags=0
+        )
+        vk.vkCreateDescriptorSetLayout(device=self._logical_device,
+                                       pCreateInfo=layout_information,
+                                       pAllocator=None)
+        """
+        push_constant_range = vk.VkPushConstantRange(
+            stageFlags=vk.VK_SHADER_STAGE_VERTEX_BIT,
+            size=glm.sizeof(glm.mat4),
+            offset=0
+        )
+        pipeline_layout_info = vk.VkPipelineLayoutCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            setLayoutCount=0,
+            pSetLayouts=[],
+            pushConstantRangeCount=1,
+            pPushConstantRanges=[push_constant_range],
+            flags=0
+        )
+
+        # Vulkan: create pipeline layout
+        self._pipeline_layout = vk.vkCreatePipelineLayout(device=self._logical_device,
+                                                          pCreateInfo=pipeline_layout_info,
+                                                          pAllocator=None)
+
+        # Vulkan: graphics pipeline information
+        graphics_pipeline_info = vk.VkGraphicsPipelineCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+            stageCount=2,
+            pStages=[vertex_shader_info, fragment_shader_info],
+            pVertexInputState=vertex_input_info,
+            pInputAssemblyState=input_assembly_info,
+            pViewportState=viewport_info,
+            pRasterizationState=rasterization_info,
+            pMultisampleState=multisample_info,
+            pColorBlendState=color_blend_info,
+            pDepthStencilState=depth_stencil_info,
+            pDynamicState=dynamic_info,
+            layout=self._pipeline_layout,
+            renderPass=self._render_pass,
+            basePipelineIndex=-1,
+            basePipelineHandle=vk.VK_NULL_HANDLE,
+            flags=0
+        )
+        
+        # Vulkan: create graphics pipeline
+        graphics_pipelines = vk.vkCreateGraphicsPipelines(device=self._logical_device,
+                                                          pipelineCache=vk.VK_NULL_HANDLE,
+                                                          createInfoCount=1,
+                                                          pCreateInfos=[graphics_pipeline_info],
+                                                          pAllocator=None)
+        self._graphics_pipeline = graphics_pipelines[0]
+
+        # Vulkan: free shader modules
+        vk.vkDestroyShaderModule(device=self._logical_device, shaderModule=vert_shader_module, pAllocator=None)
+        vk.vkDestroyShaderModule(device=self._logical_device, shaderModule=frag_shader_module, pAllocator=None)
+
+    def _createDescriptorPool(self):
+        pass # for uniform buffer... but attemping push constant instead
+
+    def _createDescriptorSet(self):
+        pass # for uniform buffer... but attemping push constant instead
+
+    def _createCommandBuffers(self):
+        # Vulkan: command buffer allocation information
+        command_buffer_info = vk.VkCommandBufferAllocateInfo(
+            sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool=self._command_pool,
+            level=vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount=1
+        )
+        
+        # Vulkan: allocate command buffer
+        command_buffers = vk.vkAllocateCommandBuffers(device=self._logical_device,
+                                                      pAllocateInfo=command_buffer_info)
+        self._command_buffer = command_buffers[0]
+
+        # Vulkan: prepare data for recording command buffers
+        command_begin_info = vk.VkCommandBufferBeginInfo(
+            sType=vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags=vk.VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT
+        )
+
+        """
+        sub_resource_range = vk.VkImageSubresourceRange(
+            aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT,
+            baseMipLevel=0,
+            levelCount=1,
+            baseArrayLayer=0,
+            layerCount=1
+        )
+        """
+        
+        clear_color = vk.VkClearValue(
+			color=vk.VkClearColorValue(float32=[0.2, 0.2, 0.2, 1.0]) # R,G,B,A
+        )
+        clear_depth = vk.VkClearValue(
+            depthStencil=vk.VkClearDepthStencilValue(depth=1.0, stencil=0)
+		)
+        
+        render_pass_begin_info = vk.VkRenderPassBeginInfo(
+            sType=vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            renderArea=vk.VkRect2D(extent=vk.VkExtent2D(width=self._width, height=self._height)),
+            clearValueCount=2,
+            pClearValues=[clear_color, clear_depth],
+            renderPass=self._render_pass,
+            framebuffer=self._framebuffer
+        )
+        
+        # Vulkan: record command buffer
+        vk.vkBeginCommandBuffer(commandBuffer=self._command_buffer, pBeginInfo=command_begin_info)
+        
+        # Vulkan: begin render pass
+        vk.vkCmdBeginRenderPass(commandBuffer=self._command_buffer,
+                                pRenderPassBegin=render_pass_begin_info,
+                                contents=vk.VK_SUBPASS_CONTENTS_INLINE)
+
+        # Vulkan: update dynamic viewport and scissor state
+        viewport = vk.VkViewport(
+            x=0.0,
+            y=0.0,
+            width=self._width,
+            height=self._height,
+            minDepth=0.0,
+            maxDepth=1.0
+        )
+        vk.vkCmdSetViewport(commandBuffer=self._command_buffer,
+                            firstViewport=0,
+                            viewportCount=1,
+                            pViewports=[viewport])
+        
+        scissor = vk.VkRect2D(
+            offset=vk.VkOffset2D(x=0, y=0),
+            extent=vk.VkExtent2D(width=self._width, height=self._height)
+        )
+        vk.vkCmdSetScissor(commandBuffer=self._command_buffer,
+                           firstScissor=0,
+                           scissorCount=1,
+                           pScissors=[scissor])
+
+        # Vulkan: bind pipeline
+        vk.vkCmdBindPipeline(commandBuffer=self._command_buffer,
+                             pipelineBindPoint=vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline=self._graphics_pipeline)
+        
+        # Vulkan: render scene
+        mvp = ffi.cast("float *", ffi.from_buffer(self._mvp_transform))
+        vk.vkCmdBindVertexBuffers(commandBuffer=self._command_buffer,
+                                  firstBinding=0,
+                                  bindingCount=1,
+                                  pBuffers=[self._vertex_object["vertices"]["buffer"]],
+                                  pOffsets=[0])
+        vk.vkCmdBindIndexBuffer(commandBuffer=self._command_buffer,
+                             buffer=self._vertex_object["indices"]["buffer"],
+                             offset=0,
+                             indexType=vk.VK_INDEX_TYPE_UINT16)
+        vk.vkCmdPushConstants(commandBuffer=self._command_buffer,
+                              layout=self._pipeline_layout,
+                              stageFlags=vk.VK_SHADER_STAGE_VERTEX_BIT,
+                              offset=0,
+                              size=glm.sizeof(glm.mat4),
+                              pValues=mvp)
+        vk.vkCmdDrawIndexed(commandBuffer=self._command_buffer,
+                            indexCount=3,
+                            instanceCount=1,
+                            firstIndex=0,
+                            vertexOffset=0,
+                            firstInstance=0)
+
+        # Vulkan: end render pass and command buffer
+        vk.vkCmdEndRenderPass(commandBuffer=self._command_buffer)
+        vk.vkEndCommandBuffer(commandBuffer=self._command_buffer)
+
     def _findMemoryTypeIndex(self, supported_memory_indices, req_properties):
         for i in range(self._device_mem_props.memoryTypeCount):
             supported = supported_memory_indices & (1 << i)
@@ -502,7 +809,6 @@ class ExVkCircle:
 
     def _updateUniformData(self):
         # TODO: animation -> update model matrix
-        mvp_transform = glm.mat4() # projection * model * view
         
         # Vulkan: copy transformation matrix
         memory_location = vk.vkMapMemory(device=self._logical_device,
@@ -510,7 +816,7 @@ class ExVkCircle:
                                          offset=0,
                                          size=glm.sizeof(glm.mat4),
                                          flags=0)
-        ffi.memmove(memory_location, glm.value_ptr(mvp_transform), glm.sizeof(glm.mat4))
+        ffi.memmove(memory_location, glm.value_ptr(self._mvp_transform), glm.sizeof(glm.mat4))
         vk.vkUnmapMemory(device=self._logical_device, memory=self._uniforms["memory"])
 
     def _getSupportedDepthFormat(self):

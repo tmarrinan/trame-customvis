@@ -2,14 +2,14 @@ from trame.app import get_server
 from trame.widgets import vuetify, rca
 from trame.ui.vuetify import SinglePageLayout
 from examplevis import ExVisCircle, ExVisViewAdapter
-from examplevulkan import ExVkCircle
+from examplevulkan import ExVkTriangle
 
 def main():
     # Create image with circle
     init_w = 800
     init_h = 600
     vis = ExVisCircle(init_w, init_h, (196, 15, 128)) # color in BGR
-    test = ExVkCircle(init_w, init_h, (128, 15, 196)) # color in RGB
+    test = ExVkTriangle(init_w, init_h)
     
     # Create Trame server
     server = get_server(client_type="vue2")

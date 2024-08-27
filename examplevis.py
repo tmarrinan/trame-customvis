@@ -33,9 +33,6 @@ class ExVisCircle:
         return self._image_type
 
     def setImageType(self, itype, options={}):
-        if self._image_type == itype:
-            return
-        
         self._image_type = itype
         if self._image_type == "rgb":
             pass # do nothing

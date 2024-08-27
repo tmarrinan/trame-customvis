@@ -30,7 +30,45 @@ class ExVkTriangle:
         
         # Initialize
         self._initVulkan()
+
+    def renderFrame(self):
+        # Animate
+        now = round(time.time_ns() / 1000000)
+        dt = (now - self._prev_time) / 1000
         
+        dx = round(self._velocity_x * dt)
+        dy = round(self._velocity_y * dt)
+        if self._triangle_center[0] + dx < 0:
+            self._triangle_center[0] = 0
+            self._velocity_x *= -1
+        elif self._triangle_center[0] + dx > self._width:
+            self._triangle_center[0] = self._width
+            self._velocity_x *= -1
+        else:
+            self._triangle_center[0] += dx
+        if self._triangle_center[1] + dy < 0:
+            self._triangle_center[1] = 0
+            self._velocity_y *= -1
+        elif self._triangle_center[1] + dy > self._height:
+            self._triangle_center[1] = self._height
+            self._triangle_center *= -1
+        else:
+            self._triangle_center[1] += dy
+        
+        # Update model matrix
+        #proj = glm.ortho(0, self._width, 0, self._height)
+        #view = glm.mat4(1)
+        #model = glm.scale(glm.mat4(1), glm.vec3(100, 100, 1))
+        #model = glm.translate(model, glm.vec3(self._triangle_center[0], self._triangle_center[1], 0))
+        #self._mvp_transform = proj * view * model
+        
+        # Vulkan: submit render command to graphics queue
+        self._submitWork(self._vk["graphic_cmd_buffer"], self._vk["graphic_queue"])
+        vk.vkDeviceWaitIdle(device=self._vk["device"])
+
+        # Update render time
+        self._prev_time = now
+
     def _initVulkan(self):
         self._vk["instance"] = self._createInstance()
         self._vk["physical_device"] = self._findPhysicalDevice()
@@ -39,6 +77,7 @@ class ExVkTriangle:
         self._vk["graphic_queue"] = self._getGraphicQueue()
         self._vk["render_pass"] = self._createRenderPass()
         self._vk.update(self._createGraphicsPipeline())
+        self._vk.update(self._createColorAttachment())
         self._vk["framebuffer"] = self._createFramebuffer()
         self._vk["command_pool"] = self._createCommandPool()
         self._vk["graphic_cmd_buffer"] = self._createCommandBuffer()
@@ -46,7 +85,9 @@ class ExVkTriangle:
 
         print("Vulkan: application objects")
         for key,item in self._vk.items():
-            print(f"  {key:21s}: {item}")
+            print(f"  {key:24s}: {item}")
+
+        self._recordDrawCommands()
 
     def _createInstance(self):
         # Get Vulkan API version
@@ -382,18 +423,22 @@ class ExVkTriangle:
 
         return {"pipeline_layout": pipeline_layout, "pipeline": graphics_pipeline}
 
-    def _createFramebuffer(self):
+    def _createColorAttachment(self):
         # Create image view for framebuffer
         color_attachment = self._createImageView(vk.VK_FORMAT_R8G8B8A8_UNORM,
                                                  vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                                  vk.VK_IMAGE_ASPECT_COLOR_BIT)
 
+        return {"color_attachment_image": color_attachment["image"], "color_attachment_memory": color_attachment["memory"],
+                "color_attachment_view": color_attachment["view"]}
+
+    def _createFramebuffer(self):
         # Create framebuffer information
         framebuffer_info = vk.VkFramebufferCreateInfo(
             sType=vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             renderPass=self._vk["render_pass"],
             attachmentCount=1,
-            pAttachments=[color_attachment["view"]],
+            pAttachments=[self._vk["color_attachment_view"]],
             width=self._width,
             height=self._height,
             layers=1
@@ -426,12 +471,89 @@ class ExVkTriangle:
         return vk.vkAllocateCommandBuffers(device=self._vk["device"], pAllocateInfo=command_buffer_info)[0]
 
     def _createTriangleMesh(self):
+        # Create vertex data (X,Y,R,G,B)
         vertices = np.array([ 0.0, -0.05, 1.0, 0.0, 0.0,
                               0.05, 0.05, 0.0, 1.0, 0.0,
                              -0.05, 0.05, 0.0, 0.0, 1.0],
                             dtype=np.float32)
 
-        return {"vbo_vert_buffer": None, "vbo_vert_memory": None}
+        # Create vertex buffer
+        vertex_buffer = self._createBuffer(vertices.nbytes, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                           vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+
+        # Copy vertex data to buffer
+        memory_location = vk.vkMapMemory(device=self._vk["device"], memory=vertex_buffer["memory"],
+                                         offset=0, size=vertices.nbytes, flags=0)
+        ffi.memmove(memory_location, vertices, vertices.nbytes)
+        #TEST
+        #memory_array = np.frombuffer(memory_location, dtype=vertices.dtype, count=vertices.size, offset=0)
+        #print(memory_array)
+            
+        vk.vkUnmapMemory(device=self._vk["device"], memory=vertex_buffer["memory"])
+        
+        return {"vbo_vert_buffer": vertex_buffer["buffer"], "vbo_vert_memory": vertex_buffer["memory"]}
+
+    def _recordDrawCommands(self):
+        # Prepare data for recording command buffers
+        command_begin_info = vk.VkCommandBufferBeginInfo(
+            sType=vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+        )
+        
+        # Record command buffer
+        vk.vkBeginCommandBuffer(commandBuffer=self._vk["graphic_cmd_buffer"], pBeginInfo=command_begin_info)
+        
+        # Set clear color value
+        clear_color = vk.VkClearValue(
+			color=vk.VkClearColorValue(float32=[0.4, 0.1, 0.6, 1.0]) # R,G,B,A
+        )
+        
+        # Render pass begin information
+        render_pass_begin_info = vk.VkRenderPassBeginInfo(
+            sType=vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+            renderArea=[[0, 0], [self._width, self._height]], #vk.VkRect2D(extent=vk.VkExtent2D(width=self._width, height=self._height)),
+            clearValueCount=1,
+            pClearValues=[clear_color],
+            renderPass=self._vk["render_pass"],
+            framebuffer=self._vk["framebuffer"]
+        )
+        
+        # Begin render pass
+        vk.vkCmdBeginRenderPass(commandBuffer=self._vk["graphic_cmd_buffer"],
+                                pRenderPassBegin=render_pass_begin_info,
+                                contents=vk.VK_SUBPASS_CONTENTS_INLINE)
+
+        # Bind pipeline
+        vk.vkCmdBindPipeline(commandBuffer=self._vk["graphic_cmd_buffer"],
+                             pipelineBindPoint=vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                             pipeline=self._vk["pipeline"])
+
+        # Bind vertex buffer object
+        vk.vkCmdBindVertexBuffers(commandBuffer=self._vk["graphic_cmd_buffer"],
+                                  firstBinding=0,
+                                  bindingCount=1,
+                                  pBuffers=[self._vk["vbo_vert_buffer"]],
+                                  pOffsets=[0])
+        
+        # MVP push constant
+        triangle_positions = []
+        for x in [-0.75, -0.50, -0.25, 0.00, 0.25, 0.50, 0.75]:
+            for y in [-0.75, -0.50, -0.25, 0.00, 0.25, 0.50, 0.75]:
+                triangle_positions.append(glm.vec3(x, y, 0))
+        for pos in triangle_positions:
+            mvp_mat4 = glm.translate(glm.mat4(1.0), pos)
+            mvp_raw = ffi.cast("float *", ffi.from_buffer(mvp_mat4))
+            vk.vkCmdPushConstants(commandBuffer=self._vk["graphic_cmd_buffer"],
+                                  layout=self._vk["pipeline_layout"],
+                                  stageFlags=vk.VK_SHADER_STAGE_VERTEX_BIT,
+                                  offset=0,
+                                  size=glm.sizeof(glm.mat4),
+                                  pValues=mvp_raw)
+            vk.vkCmdDraw(commandBuffer=self._vk["graphic_cmd_buffer"], vertexCount=3, 
+                         instanceCount=1, firstVertex=0, firstInstance=0)
+
+        # End render pass and command buffer
+        vk.vkCmdEndRenderPass(commandBuffer=self._vk["graphic_cmd_buffer"])
+        vk.vkEndCommandBuffer(commandBuffer=self._vk["graphic_cmd_buffer"])
 
     def _createShaderModule(self, filename):
         file = open(filename, 'rb')
@@ -479,9 +601,7 @@ class ExVkTriangle:
             allocationSize=mem_reqs.size,
             memoryTypeIndex=mem_type_index
         )
-        memory = vk.vkAllocateMemory(device=self._vk["device"],
-                                     pAllocateInfo=mem_alloc_info,
-                                     pAllocator=None)
+        memory = vk.vkAllocateMemory(device=self._vk["device"], pAllocateInfo=mem_alloc_info, pAllocator=None)
         vk.vkBindImageMemory(device=self._vk["device"], image=image, memory=memory, memoryOffset=0)
 
         # Create image view for specified attachment image
@@ -510,6 +630,193 @@ class ExVkTriangle:
                                           pAllocator=None)
 
         return {"image": image, "memory": memory, "view": image_view}
+
+    def _createBuffer(self, size, usage_flags, memory_prop_flags):
+        # Create buffer
+        buffer_info = vk.VkBufferCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+            size=size,
+            usage=usage_flags,
+            sharingMode=vk.VK_SHARING_MODE_EXCLUSIVE
+        )
+        buffer = vk.vkCreateBuffer(device=self._vk["device"], pCreateInfo=buffer_info, pAllocator=None)
+        
+        # Get buffer memory requirments
+        mem_reqs = vk.vkGetBufferMemoryRequirements(device=self._vk["device"], buffer=buffer)
+        mem_type_index = self._findMemoryTypeIndex(mem_reqs.memoryTypeBits, memory_prop_flags)
+        
+        # Allocate memory
+        mem_alloc_info = vk.VkMemoryAllocateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize=mem_reqs.size,
+            memoryTypeIndex=mem_type_index
+        )
+        memory = vk.vkAllocateMemory(device=self._vk["device"], pAllocateInfo=mem_alloc_info, pAllocator=None)
+
+        # Bind buffer memory
+        vk.vkBindBufferMemory(device=self._vk["device"], buffer=buffer, memory=memory, memoryOffset=0)
+        
+        return {"buffer": buffer, "memory": memory}
+
+    def _submitWork(self, command_buffer, queue):
+        submit_info = vk.VkSubmitInfo(
+            sType=vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            commandBufferCount=1,
+            pCommandBuffers=[command_buffer]
+        )
+
+        fence_info = vk.VkFenceCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            flags=0
+        )
+        fence = vk.vkCreateFence(device=self._vk["device"],
+                                 pCreateInfo=fence_info,
+                                 pAllocator=None)
+
+        vk.vkQueueSubmit(queue=queue,
+                         submitCount=1, 
+                         pSubmits=[submit_info],
+                         fence=fence)
+        vk.vkWaitForFences(device=self._vk["device"],
+                           fenceCount=1,
+                           pFences=[fence],
+                           waitAll=vk.VK_TRUE,
+                           timeout=np.iinfo(np.uint64).max)
+        vk.vkDestroyFence(device=self._vk["device"],
+                          fence=fence,
+                          pAllocator=None)
+
+    def _insertImageMemoryBarrier(self, command_buffer, image, src_access_mask, dst_access_mask,
+                                  old_img_layout, new_img_layout, src_stage_mask, dst_stage_mask,
+                                  subresource_range):
+        memory_barrier = vk.VkImageMemoryBarrier(
+            sType=vk.VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            srcQueueFamilyIndex=vk.VK_QUEUE_FAMILY_IGNORED,
+			dstQueueFamilyIndex=vk.VK_QUEUE_FAMILY_IGNORED,
+            srcAccessMask=src_access_mask,
+            dstAccessMask=dst_access_mask,
+            oldLayout=old_img_layout,
+            newLayout=new_img_layout,
+            image=image,
+            subresourceRange=subresource_range
+        )
+        vk.vkCmdPipelineBarrier(commandBuffer=command_buffer,
+				                srcStageMask=src_stage_mask,
+				                dstStageMask=dst_stage_mask,
+				                dependencyFlags=0,
+				                memoryBarrierCount=0,
+                                pMemoryBarriers=[],
+				                bufferMemoryBarrierCount=0,
+                                pBufferMemoryBarriers=[],
+                                imageMemoryBarrierCount=1,
+                                pImageMemoryBarriers=[memory_barrier])
+
+    def _getRawImage(self):
+        # Vulkan: create destination image to copy to and read the memory from
+        image_info = vk.VkImageCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            imageType=vk.VK_IMAGE_TYPE_2D,
+			format=vk.VK_FORMAT_R8G8B8A8_UNORM,
+			extent=vk.VkExtent3D(width=self._width, height=self._height, depth=1),
+			arrayLayers=1,
+			mipLevels=1,
+			initialLayout=vk.VK_IMAGE_LAYOUT_UNDEFINED,
+			samples=vk.VK_SAMPLE_COUNT_1_BIT,
+			tiling=vk.VK_IMAGE_TILING_LINEAR,
+			usage=vk.VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            flags=0
+        )
+        image = vk.vkCreateImage(device=self._vk["device"], pCreateInfo=image_info, pAllocator=None)
+        
+        # Vulkan: create and bind memory for the image
+        mem_reqs = vk.vkGetImageMemoryRequirements(device=self._vk["device"], image=image)
+        mem_type_index = self._findMemoryTypeIndex(mem_reqs.memoryTypeBits,
+                                                   vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+        mem_alloc_info = vk.VkMemoryAllocateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            allocationSize=mem_reqs.size,
+            memoryTypeIndex=mem_type_index
+        )
+        image_memory = vk.vkAllocateMemory(device=self._vk["device"], pAllocateInfo=mem_alloc_info, pAllocator=None)
+        vk.vkBindImageMemory(device=self._vk["device"], image=image, memory=image_memory, memoryOffset=0)
+
+        # Vulkan: copy rendered image to host visible destination image
+        command_buffer_info = vk.VkCommandBufferAllocateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool=self._vk["command_pool"],
+            level=vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount=1
+        )
+        copy_command_buffer = vk.vkAllocateCommandBuffers(self._vk["device"], command_buffer_info)[0]
+        
+        buffer_begin_info = vk.VkCommandBufferBeginInfo(
+            sType=vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags=0
+        )
+        vk.vkBeginCommandBuffer(commandBuffer=copy_command_buffer, pBeginInfo=buffer_begin_info)
+
+        subresource_range = vk.VkImageSubresourceRange(
+            aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT,
+            baseMipLevel=0,
+            levelCount=1,
+            baseArrayLayer=0,
+            layerCount=1
+        )
+        self._insertImageMemoryBarrier(copy_command_buffer, image, 0, vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+                                       vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                       vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                       subresource_range)
+        image_copy_region = vk.VkImageCopy(
+            srcSubresource=vk.VkImageSubresourceLayers(aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT, layerCount=1),
+            dstSubresource=vk.VkImageSubresourceLayers(aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT, layerCount=1),
+            extent=vk.VkExtent3D(width=self._width, height=self._height, depth=1)
+        )
+        vk.vkCmdCopyImage(commandBuffer=copy_command_buffer,
+                          srcImage=self._vk["color_attachment_image"],
+				          srcImageLayout=vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                          dstImage=image,
+                          dstImageLayout=vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          regionCount=1,
+                          pRegions=[image_copy_region])
+        self._insertImageMemoryBarrier(copy_command_buffer, image, vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+                                       vk.VK_ACCESS_MEMORY_READ_BIT, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                       vk.VK_IMAGE_LAYOUT_GENERAL, vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                       vk.VK_PIPELINE_STAGE_TRANSFER_BIT, subresource_range)
+
+        vk.vkEndCommandBuffer(commandBuffer=copy_command_buffer)
+        
+        self._submitWork(copy_command_buffer, self._vk["graphic_queue"])
+        
+        # Vulkan: get layout of the image (including row pitch)
+        subresource = vk.VkImageSubresource(aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT)
+        subresource_layout = vk.vkGetImageSubresourceLayout(device=self._vk["device"],
+                                                            image=image,
+                                                            pSubresource=[subresource])
+        
+        # Vulkan: map image memory so we can read it
+        memory_location = vk.vkMapMemory(device=self._vk["device"],
+                                         memory=image_memory,
+                                         offset=0,
+                                         size=self._width * self._height * 4,
+                                         flags=0)
+        
+        # Convert memory to numpy array and extract RGB data
+        memory_array = np.frombuffer(memory_location, dtype=np.uint8, count=self._width * self._height * 4,
+                                     offset=subresource_layout.offset)
+        print(f"FIRST PX: {memory_array[0]} {memory_array[1]} {memory_array[2]} {memory_array[3]}")
+        for px in range(0, memory_array.size, 4):
+            if memory_array[px+0] != 102 or memory_array[px+1] != 25 or memory_array[px+2] != 153:
+                print(f"FOUND non-purple px: {px} ({memory_array[px+0]}, {memory_array[px+1]}, {memory_array[px+3]})")
+                break
+        rgb_img = memory_array[np.mod(np.arange(memory_array.size), 4) != 3]
+        
+        # TEST -> save PPM image
+        file = open("vk_image.ppm", "wb")
+        file.write(f"P6\n{self._width} {self._height}\n255\n".encode("utf-8"))
+        file.write(rgb_img.tobytes())
+        file.close()
+
+        return rgb_img
 
     def _messageSeverityToString(self, message_severity):
         severity_str = "UNKNOWN"

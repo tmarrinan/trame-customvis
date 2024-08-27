@@ -10,6 +10,9 @@ def main():
     init_h = 600
     vis = ExVisCircle(init_w, init_h, (196, 15, 128)) # color in BGR
     test = ExVkTriangle(init_w, init_h)
+    test.renderFrame()
+    x = test._getRawImage()
+    print(x)
     
     # Create Trame server
     server = get_server(client_type="vue2")

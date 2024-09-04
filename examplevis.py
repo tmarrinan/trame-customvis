@@ -87,8 +87,15 @@ class ExVisCircle:
         self._prev_time = now
 
     def _getRawImage(self):
+        start_ms = round(time.time_ns() / 1000000)
+    
         rgb_img = cv2.cvtColor(self._image, cv2.COLOR_BGR2RGB)
-        return rgb_img.flatten()
+        rgb_img = rgb_img.flatten()
+        
+        end_ms = round(time.time_ns() / 1000000)
+        print(f"Copy RGB framebuffer: {end_ms - start_ms} ms")
+        
+        return rgb_img
         
     def _getJpegImage(self):
         result, encoded_img = cv2.imencode('.jpg', self._image, (cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality))

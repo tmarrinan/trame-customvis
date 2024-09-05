@@ -37,7 +37,7 @@ def main():
             vis.setImageType(stream_encoder)
         elif stream_encoder == "jpeg":
             state.active_display_mode = "image"
-            vis.setImageType(stream_encoder, options={"quality": 90})
+            vis.setImageType(stream_encoder, options={"quality": 75})
         elif stream_encoder == "h264":
             state.active_display_mode = "media-source"
             vis.setImageType(stream_encoder)

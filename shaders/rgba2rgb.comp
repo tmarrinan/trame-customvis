@@ -1,0 +1,23 @@
+#version 450
+
+layout (local_size_x=16, local_size_y=16) in;
+
+layout(std140, binding=0) uniform UniformData {
+    uvec2 size;
+} ubo;
+layout(binding=1, rgba8) readonly uniform image2D source_img;
+
+layout(binding=2, r8) writeonly uniform image2D output_img;
+
+void main() {
+    if (gl_GlobalInvocationID.x < ubo.size.x && gl_GlobalInvocationID.y < ubo.size.y) {
+        ivec2 r_pos = ivec2(gl_GlobalInvocationID.x * 3 + 0, gl_GlobalInvocationID.y);
+        ivec2 g_pos = ivec2(gl_GlobalInvocationID.x * 3 + 1, gl_GlobalInvocationID.y);
+        ivec2 b_pos = ivec2(gl_GlobalInvocationID.x * 3 + 2, gl_GlobalInvocationID.y);
+        
+        vec4 rgba = imageLoad(source_img, ivec2(gl_GlobalInvocationID.xy));
+        imageStore(output_img, r_pos, vec4(rgba.r, 0.0, 0.0, 0.0));
+        imageStore(output_img, g_pos, vec4(rgba.g, 0.0, 0.0, 0.0));
+        imageStore(output_img, b_pos, vec4(rgba.b, 0.0, 0.0, 0.0));
+    }
+}

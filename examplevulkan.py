@@ -1,4 +1,5 @@
 import time
+import math
 import asyncio
 import glm
 import cv2
@@ -43,6 +44,7 @@ class ExVkTriangle:
         # Allow device commands to finish
         vk.vkDeviceWaitIdle(device=self._vk["device"])
 
+        """
         # Destroy old framebuffer and image views
         vk.vkDestroyFramebuffer(device=self._vk["device"], framebuffer=self._vk["framebuffer"], pAllocator=None)
 
@@ -66,6 +68,8 @@ class ExVkTriangle:
         # Re-record the draw commands
         vk.vkResetCommandBuffer(commandBuffer=self._vk["graphic_cmd_buffer"], flags=0)
         self._recordDrawCommands()
+        
+        """
         
         # Now ready to render again
         self._ready = True
@@ -142,11 +146,11 @@ class ExVkTriangle:
         ubo_data[0:16] = mat_model
         ubo_data[16:32] = mat_view
         ubo_data[32:48] = mat_proj
-        ffi.memmove(self._vk["uniform_memory_location"], ubo_data, ubo_data.nbytes)
+        ffi.memmove(self._vk["graphic_uniform_memory_loc"], ubo_data, ubo_data.nbytes)
         
         # Vulkan: submit render command to graphics queue
-        self._submitWork(self._vk["graphic_cmd_buffer"], self._vk["graphic_queue"])
-        vk.vkDeviceWaitIdle(device=self._vk["device"])
+        self._submitWork(self._vk["graphic_cmd_buffer"], self._vk["graphic_compute_queue"])
+        #vk.vkDeviceWaitIdle(device=self._vk["device"])
 
         # Update render time
         self._prev_time = now
@@ -161,12 +165,12 @@ class ExVkTriangle:
         self._vk["depth_format"] = self._getSupportedDepthFormat()
 
         # Create a logical device and graphics queue
-        self._vk["graphic_family_index"] = self._getGraphicQueueFamilyIndex()
+        self._vk["graphic_compute_fam_idx"] = self._getGraphicComputeQueueFamilyIndex()
         self._vk["device"] = self._createLogicalDevice()
-        self._vk["graphic_queue"] = self._getGraphicQueue()
+        self._vk["graphic_compute_queue"] = self._getGraphicComputeQueue()
         
         # Create the uniform buffer object for passing data to our shaders
-        self._vk.update(self._createUniformBuffer())
+        self._vk.update(self._createGraphicsUniformBuffer())
         
         # Set up the render pass and graphics pipeline
         self._vk["render_pass"] = self._createRenderPass(self._vk["color_format"], self._vk["depth_format"])
@@ -183,14 +187,22 @@ class ExVkTriangle:
 
         # Create the vertex buffer object for our triangle mesh
         self._vk.update(self._createTriangleMesh())
+        
+        # Set up compute shader pipeline for converting rendered image to RGB
+        self._vk["compute_cmd_buffer"] = self._createCommandBuffer()
+        self._vk.update(self._createComputeUniformBuffer())
+        self._vk.update(self._createComputePipeline())
 
         # Print out all Vulkan variables
         print("Vulkan: application objects")
         for key,item in self._vk.items():
-            print(f"  {key:24s}: {item}")
+            print(f"  {key:26s}: {item}")
 
         # Record the draw commands
         self._recordDrawCommands()
+        
+        # Record the compute commands
+        self._recordComputeRgbaToRgbCommands()
         
         # Now ready to render
         self._ready = True
@@ -285,23 +297,26 @@ class ExVkTriangle:
         if not self._gpu_video_encode:
             print("Vk: WARNING> GPU video encoding not supported")
 
-    def _getGraphicQueueFamilyIndex(self):
+    def _getGraphicComputeQueueFamilyIndex(self):
         # Find index for a graphics queue
         queue_family_index = -1
         queue_families = vk.vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice=self._vk["physical_device"])
         for i in range(len(queue_families)):
-            if queue_families[i].queueCount > 0 and (queue_families[i].queueFlags & vk.VK_QUEUE_GRAPHICS_BIT):
+            is_graphic = queue_families[i].queueFlags & vk.VK_QUEUE_GRAPHICS_BIT
+            is_compute = queue_families[i].queueFlags & vk.VK_QUEUE_COMPUTE_BIT
+            if queue_families[i].queueCount > 0 and is_graphic and is_compute:
                 queue_family_index = i
         if queue_family_index < 0:
-            print(f"Vulkan: WARNING> no graphic queue family found")
+            print(f"Vulkan: WARNING> no graphic/compute queue family found")
 
+        print(f"queue family index: {queue_family_index}")
         return queue_family_index
 
     def _createLogicalDevice(self):
         # Create queue information
         queue_create_info = vk.VkDeviceQueueCreateInfo(
             sType=vk.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            queueFamilyIndex=self._vk["graphic_family_index"],
+            queueFamilyIndex=self._vk["graphic_compute_fam_idx"],
             queueCount=1,
             pQueuePriorities=[1.0]
         )
@@ -332,13 +347,13 @@ class ExVkTriangle:
 
         return logical_device
 
-    def _getGraphicQueue(self):
+    def _getGraphicComputeQueue(self):
         # Get graphics queue
         return vk.vkGetDeviceQueue(device=self._vk["device"],
-                                   queueFamilyIndex=self._vk["graphic_family_index"],
+                                   queueFamilyIndex=self._vk["graphic_compute_fam_idx"],
                                    queueIndex=0)
 
-    def _createUniformBuffer(self):
+    def _createGraphicsUniformBuffer(self):
         # Create descriptor set layout information
         layout_binding = vk.VkDescriptorSetLayoutBinding(
             binding=0,
@@ -410,11 +425,140 @@ class ExVkTriangle:
                                  pDescriptorWrites=[descriptor_write], descriptorCopyCount=0,
                                  pDescriptorCopies=None)
 
-        return {"descriptor_set": descriptor_set,
-                "descriptor_set_layout": layout,
-                "uniform_buffer": uniform_buffer["buffer"],
-                "uniform_memory": uniform_buffer["memory"],
-                "uniform_memory_location": memory_location}
+        return {"graphic_set": descriptor_set,
+                "graphic_set_layout": layout,
+                "graphic_uniform_buffer": uniform_buffer["buffer"],
+                "graphic_uniform_memory": uniform_buffer["memory"],
+                "graphic_uniform_memory_loc": memory_location}
+
+    def _createComputeUniformBuffer(self):
+        # Create descriptor set layout information
+        layout_binding_ubo = vk.VkDescriptorSetLayoutBinding(
+            binding=0,
+            descriptorType=vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            descriptorCount=1,
+            stageFlags=vk.VK_SHADER_STAGE_COMPUTE_BIT
+        )
+        layout_binding_img_in = vk.VkDescriptorSetLayoutBinding(
+            binding=1,
+            descriptorType=vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            descriptorCount=1,
+            stageFlags=vk.VK_SHADER_STAGE_COMPUTE_BIT
+        )
+        layout_binding_img_out = vk.VkDescriptorSetLayoutBinding(
+            binding=2,
+            descriptorType=vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            descriptorCount=1,
+            stageFlags=vk.VK_SHADER_STAGE_COMPUTE_BIT
+        )
+        layout_info = vk.VkDescriptorSetLayoutCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            bindingCount=3,
+            pBindings=[layout_binding_ubo, layout_binding_img_in, layout_binding_img_out]
+        )
+        
+        # Create descriptor set layout
+        layout = vk.vkCreateDescriptorSetLayout(device=self._vk["device"], pCreateInfo=layout_info, pAllocator=None)
+
+        # Create descriptor pool information
+        pool_size_ubo = vk.VkDescriptorPoolSize(type=vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, descriptorCount=1)
+        pool_size_img_in = vk.VkDescriptorPoolSize(type=vk.VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, descriptorCount=1)
+        pool_size_img_out = vk.VkDescriptorPoolSize(type=vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, descriptorCount=1)
+        pool_info = vk.VkDescriptorPoolCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+            poolSizeCount=3,
+            pPoolSizes=[pool_size_ubo, pool_size_img_in, pool_size_img_out],
+            maxSets=1
+        )
+        
+        # Create descriptor pool
+        pool = vk.vkCreateDescriptorPool(device=self._vk["device"], pCreateInfo=pool_info, pAllocator=None)
+
+        # Allocate descriptor set
+        allocate_info = vk.VkDescriptorSetAllocateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+            descriptorPool=pool,
+            descriptorSetCount=1, 
+            pSetLayouts=[layout]
+        )
+        
+        # Create descriptor set
+        descriptor_set = vk.vkAllocateDescriptorSets(device=self._vk["device"], pAllocateInfo=allocate_info)[0]
+        
+        # Create ubo buffer
+        buffer_size = glm.sizeof(glm.uvec2)
+        uniform_buffer = self._createBuffer(buffer_size, vk.VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                            vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+
+        # Map memory location
+        memory_location = vk.vkMapMemory(device=self._vk["device"], 
+                                         memory=uniform_buffer["memory"], 
+                                         offset=0,
+                                         size=buffer_size,
+                                         flags=0)
+        
+        # Create out images
+        uniform_image_out = self._createImageView(self._width * 3, self._height, vk.VK_FORMAT_R8_UNORM,
+                                                  vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk.VK_IMAGE_USAGE_STORAGE_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                                  vk.VK_IMAGE_ASPECT_COLOR_BIT)
+
+        # Configure descriptor set
+        buffer_info_ubo = vk.VkDescriptorBufferInfo(
+            buffer=uniform_buffer["buffer"],
+            offset=0,
+            range=buffer_size
+        )
+        descriptor_write_ubo = vk.VkWriteDescriptorSet(
+            sType=vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            dstSet=descriptor_set,
+            dstBinding=0,
+            dstArrayElement=0,
+            descriptorType=vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            descriptorCount=1,
+            pBufferInfo=[buffer_info_ubo]
+        )
+        image_info_in = vk.VkDescriptorImageInfo(
+            sampler=None,
+            imageView=self._vk["color_attachment_view"],
+            imageLayout=vk.VK_IMAGE_LAYOUT_GENERAL
+        )
+        descriptor_write_img_in = vk.VkWriteDescriptorSet(
+            sType=vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            dstSet=descriptor_set,
+            dstBinding=1,
+            dstArrayElement=0,
+            descriptorType=vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            descriptorCount=1,
+            pImageInfo=[image_info_in]
+        )
+        image_info_out = vk.VkDescriptorImageInfo(
+            sampler=None,
+            imageView=uniform_image_out["view"],
+            imageLayout=vk.VK_IMAGE_LAYOUT_GENERAL
+        )
+        descriptor_write_img_out = vk.VkWriteDescriptorSet(
+            sType=vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            dstSet=descriptor_set,
+            dstBinding=2,
+            dstArrayElement=0,
+            descriptorType=vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            descriptorCount=1,
+            pImageInfo=[image_info_out]
+        )
+        vk.vkUpdateDescriptorSets(device=self._vk["device"],
+                                  descriptorWriteCount=3,
+                                  pDescriptorWrites=[descriptor_write_ubo, descriptor_write_img_in, descriptor_write_img_out],
+                                  descriptorCopyCount=0,
+                                  pDescriptorCopies=None)
+
+        return {"compute_set": descriptor_set,
+                "compute_set_layout": layout,
+                "compute_uniform_buffer": uniform_buffer["buffer"],
+                "compute_uniform_memory": uniform_buffer["memory"],
+                "compute_uniform_memory_loc": memory_location,
+                "compute_rgb_image": uniform_image_out["image"],
+                "compute_rgb_memory": uniform_image_out["memory"],
+                "compute_rgb_view": uniform_image_out["view"]}
 
     def _createRenderPass(self, color_format, depth_format):
         # Create color attachment description
@@ -426,7 +570,7 @@ class ExVkTriangle:
             stencilLoadOp=vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
             stencilStoreOp=vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
             initialLayout=vk.VK_IMAGE_LAYOUT_UNDEFINED,
-            finalLayout=vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL 
+            finalLayout=vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
         )
 
         # Create color attachment reference
@@ -526,27 +670,6 @@ class ExVkTriangle:
             primitiveRestartEnable=vk.VK_FALSE
         )
         
-        """
-        # Set up viewport and scissor
-        viewport = vk.VkViewport(x=0,
-                                 y=0,
-                                 width=self._width,
-                                 height=self._height,
-                                 minDepth=0.0,
-                                 maxDepth=1.0)
-        scissor = vk.VkRect2D(offset=[0,0],                       # vk.VkOffset2D(x=0, y=0),
-                              extent=[self._width, self._height]) # vk.VkExtent2D(width=self._width, height=self._height)
-        
-        # Create viewport state information
-        viewport_state_info = vk.VkPipelineViewportStateCreateInfo(
-            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            viewportCount=1,
-            pViewports=viewport,
-            scissorCount=1,
-            pScissors=scissor
-        )
-        """
-        
         # Dynamic viewport and scissor information
         dynamic_state_info = vk.VkPipelineDynamicStateCreateInfo(
             sType=vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -611,11 +734,8 @@ class ExVkTriangle:
         # Create pipeline layout information
         pipeline_layout_info = vk.VkPipelineLayoutCreateInfo(
             sType=vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-            #pushConstantRangeCount=1,
-            #pPushConstantRanges=[push_constant_range],
-            #setLayoutCount=0
             setLayoutCount=1,
-            pSetLayouts=[self._vk["descriptor_set_layout"]]
+            pSetLayouts=[self._vk["graphic_set_layout"]]
         )
 
         # Create pipeline layout
@@ -652,12 +772,56 @@ class ExVkTriangle:
         vk.vkDestroyShaderModule(device=self._vk["device"], shaderModule=vert_shader_module, pAllocator=None)
         vk.vkDestroyShaderModule(device=self._vk["device"], shaderModule=frag_shader_module, pAllocator=None)
 
-        return {"pipeline_layout": pipeline_layout, "pipeline": graphics_pipeline}
+        return {"graphic_layout": pipeline_layout, "graphic_pipeline": graphics_pipeline}
+
+    def _createComputePipeline(self):
+        # Load in compute shader
+        comp_shader_module = self._createShaderModule("./shaders/compiled/rgba2rgb.comp.spv")
+        
+        # Set up shader stage information
+        compute_shader_info = vk.VkPipelineShaderStageCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            stage=vk.VK_SHADER_STAGE_COMPUTE_BIT,
+            module=comp_shader_module,
+            pName="main"
+        )
+        
+        # Create pipeline layout information
+        pipeline_layout_info = vk.VkPipelineLayoutCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            setLayoutCount=1,
+            pSetLayouts=[self._vk["compute_set_layout"]]
+        )
+
+        # Create pipeline layout
+        pipeline_layout = vk.vkCreatePipelineLayout(device=self._vk["device"],
+                                                    pCreateInfo=pipeline_layout_info,
+                                                    pAllocator=None)
+        
+        # Create compute pipeline information
+        pipeline_info = vk.VkComputePipelineCreateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+            stage=compute_shader_info,
+            layout=pipeline_layout,
+            flags=0
+        )
+        
+        # Create compute pipeline
+        compute_pipeline = vk.vkCreateComputePipelines(device=self._vk["device"],
+                                                       pipelineCache=vk.VK_NULL_HANDLE,
+                                                       createInfoCount=1,
+                                                       pCreateInfos=pipeline_info,
+                                                       pAllocator=None)[0]
+
+        # Vulkan: free shader modules
+        vk.vkDestroyShaderModule(device=self._vk["device"], shaderModule=comp_shader_module, pAllocator=None)
+
+        return {"compute_layout": pipeline_layout, "compute_pipeline": compute_pipeline}
 
     def _createColorAttachment(self, color_format):
         # Create color image view for framebuffer
-        color_attachment = self._createImageView(color_format,
-                                                 vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        color_attachment = self._createImageView(self._width, self._height, color_format,
+                                                 vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk.VK_IMAGE_USAGE_STORAGE_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                                  vk.VK_IMAGE_ASPECT_COLOR_BIT)
 
         return {"color_attachment_image": color_attachment["image"], "color_attachment_memory": color_attachment["memory"],
@@ -669,7 +833,8 @@ class ExVkTriangle:
         if depth_format >= vk.VK_FORMAT_D16_UNORM_S8_UINT:
             depth_aspect_mask |= vk.VK_IMAGE_ASPECT_STENCIL_BIT
 
-        depth_attachment = self._createImageView(depth_format, vk.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, depth_aspect_mask)
+        depth_attachment = self._createImageView(self._width, self._height, depth_format,
+                                                 vk.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, depth_aspect_mask)
 
         return {"depth_attachment_image": depth_attachment["image"], "depth_attachment_memory": depth_attachment["memory"],
                 "depth_attachment_view": depth_attachment["view"]}
@@ -693,7 +858,7 @@ class ExVkTriangle:
         # Create command pool information
         command_pool_info = vk.VkCommandPoolCreateInfo(
             sType=vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-            queueFamilyIndex=self._vk["graphic_family_index"],
+            queueFamilyIndex=self._vk["graphic_compute_fam_idx"],
             flags=vk.VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
         )
         
@@ -755,7 +920,7 @@ class ExVkTriangle:
                            pRegions=[copy_region])
         vk.vkEndCommandBuffer(commandBuffer=copy_command_buffer)
         
-        self._submitWork(copy_command_buffer, self._vk["graphic_queue"])
+        self._submitWork(copy_command_buffer, self._vk["graphic_compute_queue"])
         
         # Free stagin buffer
         vk.vkDestroyBuffer(device=self._vk["device"], buffer=staging["buffer"], pAllocator=None)
@@ -823,7 +988,7 @@ class ExVkTriangle:
         # Bind pipeline
         vk.vkCmdBindPipeline(commandBuffer=self._vk["graphic_cmd_buffer"],
                              pipelineBindPoint=vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
-                             pipeline=self._vk["pipeline"])
+                             pipeline=self._vk["graphic_pipeline"])
 
         # Bind vertex buffer object
         vk.vkCmdBindVertexBuffers(commandBuffer=self._vk["graphic_cmd_buffer"],
@@ -835,10 +1000,10 @@ class ExVkTriangle:
         # Bind uniform buffer descriptor set
         vk.vkCmdBindDescriptorSets(commandBuffer=self._vk["graphic_cmd_buffer"],
                                    pipelineBindPoint=vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                   layout=self._vk["pipeline_layout"],
+                                   layout=self._vk["graphic_layout"],
                                    firstSet=0,
                                    descriptorSetCount=1,
-                                   pDescriptorSets=[self._vk["descriptor_set"]],
+                                   pDescriptorSets=[self._vk["graphic_set"]],
                                    dynamicOffsetCount=0,
                                    pDynamicOffsets=None)
         
@@ -849,6 +1014,55 @@ class ExVkTriangle:
         # End render pass and command buffer
         vk.vkCmdEndRenderPass(commandBuffer=self._vk["graphic_cmd_buffer"])
         vk.vkEndCommandBuffer(commandBuffer=self._vk["graphic_cmd_buffer"])
+
+    def _recordComputeRgbaToRgbCommands(self):
+        # Prepare data for recording command buffers
+        command_begin_info = vk.VkCommandBufferBeginInfo(
+            sType=vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+        )
+        
+        # Record command buffer
+        vk.vkBeginCommandBuffer(commandBuffer=self._vk["compute_cmd_buffer"], pBeginInfo=command_begin_info)
+        
+        # Bind pipeline
+        vk.vkCmdBindPipeline(commandBuffer=self._vk["compute_cmd_buffer"],
+                             pipelineBindPoint=vk.VK_PIPELINE_BIND_POINT_COMPUTE,
+                             pipeline=self._vk["compute_pipeline"])
+
+        # Bind uniform buffer descriptor set
+        vk.vkCmdBindDescriptorSets(commandBuffer=self._vk["compute_cmd_buffer"],
+                                   pipelineBindPoint=vk.VK_PIPELINE_BIND_POINT_COMPUTE,
+                                   layout=self._vk["compute_layout"],
+                                   firstSet=0,
+                                   descriptorSetCount=1,
+                                   pDescriptorSets=[self._vk["compute_set"]],
+                                   dynamicOffsetCount=0,
+                                   pDynamicOffsets=None)
+                                   
+        subresource_range = vk.VkImageSubresourceRange(
+            aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT,
+            baseMipLevel=0,
+            levelCount=1,
+            baseArrayLayer=0,
+            layerCount=1
+        )
+        self._insertImageMemoryBarrier(self._vk["compute_cmd_buffer"], self._vk["color_attachment_image"], 0, 0,
+                                       vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.VK_IMAGE_LAYOUT_GENERAL,
+                                       vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                       subresource_range)
+        self._insertImageMemoryBarrier(self._vk["compute_cmd_buffer"], self._vk["compute_rgb_image"], 0, 0,
+                                       vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_GENERAL,
+                                       vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, vk.VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                       subresource_range)
+
+        # Dispatch compute pipeline
+        vk.vkCmdDispatch(commandBuffer=self._vk["compute_cmd_buffer"],
+                         groupCountX=math.ceil(self._width / 16),
+                         groupCountY=math.ceil(self._height / 16),
+                         groupCountZ=1)
+        
+        # End render pass and command buffer
+        vk.vkEndCommandBuffer(commandBuffer=self._vk["compute_cmd_buffer"])
 
     def _createShaderModule(self, filename):
         file = open(filename, 'rb')
@@ -889,13 +1103,13 @@ class ExVkTriangle:
                 return i
         return -1
 
-    def _createImageView(self, img_format, img_usage, aspect_mask):
+    def _createImageView(self, width, height, img_format, img_usage, aspect_mask):
         # Create specified attachment image
         image_info = vk.VkImageCreateInfo(
             sType=vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
             imageType=vk.VK_IMAGE_TYPE_2D,
             format=img_format,
-            extent=[self._width, self._height, 1], # vk.VkExtent3D(width=self._width, height=self._height, depth=1),
+            extent=[width, height, 1], # vk.VkExtent3D(width=width, height=height, depth=1),
             mipLevels=1,
 			arrayLayers=1,
 			samples=vk.VK_SAMPLE_COUNT_1_BIT,
@@ -1023,7 +1237,195 @@ class ExVkTriangle:
                                 imageMemoryBarrierCount=1,
                                 pImageMemoryBarriers=[memory_barrier])
 
-    def _copyFramebufferToRGBA(self):
+    def _insertBufferMemoryBarrier(self, command_buffer, buffer, src_access_mask, dst_access_mask,
+                                   src_stage_mask, dst_stage_mask, offset, size):
+        memory_barrier = vk.VkBufferMemoryBarrier(
+            sType=vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            srcQueueFamilyIndex=vk.VK_QUEUE_FAMILY_IGNORED,
+			dstQueueFamilyIndex=vk.VK_QUEUE_FAMILY_IGNORED,
+            srcAccessMask=src_access_mask,
+            dstAccessMask=dst_access_mask,
+            offset=offset,
+            size=size,
+            buffer=buffer
+        )
+        vk.vkCmdPipelineBarrier(commandBuffer=command_buffer,
+				                srcStageMask=src_stage_mask,
+				                dstStageMask=dst_stage_mask,
+				                dependencyFlags=0,
+				                memoryBarrierCount=0,
+                                pMemoryBarriers=[],
+				                bufferMemoryBarrierCount=1,
+                                pBufferMemoryBarriers=[memory_barrier],
+                                imageMemoryBarrierCount=0,
+                                pImageMemoryBarriers=[])
+
+    def _copyFramebufferToRgb(self):
+        buffer_size = self._width * self._height * 3
+    
+        # Make class member var (only allocate once)
+        ubo_data = np.empty(2, dtype=np.uint32)
+        ubo_data[0] = self._width
+        ubo_data[1] = self._height
+        ffi.memmove(self._vk["compute_uniform_memory_loc"], ubo_data, ubo_data.nbytes)
+        
+        # Submit compute command to graphics/compute queue
+        self._submitWork(self._vk["compute_cmd_buffer"], self._vk["graphic_compute_queue"])
+        
+        # Create destination buffer to copy image into
+        rgb_buffer = self._createBuffer(buffer_size, vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                        vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+
+        # Copy rendered image to host visible destination buffer
+        command_buffer_info = vk.VkCommandBufferAllocateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool=self._vk["command_pool"],
+            level=vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount=1
+        )
+        copy_command_buffer = vk.vkAllocateCommandBuffers(self._vk["device"], command_buffer_info)[0]
+        
+        buffer_begin_info = vk.VkCommandBufferBeginInfo(
+            sType=vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags=0
+        )
+        vk.vkBeginCommandBuffer(commandBuffer=copy_command_buffer, pBeginInfo=buffer_begin_info)
+
+        subresource_range = vk.VkImageSubresourceRange(
+            aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT,
+            baseMipLevel=0,
+            levelCount=1,
+            baseArrayLayer=0,
+            layerCount=1
+        )
+        #self._insertBufferMemoryBarrier(copy_command_buffer, rgb_buffer["buffer"], 0, vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+        #                                vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, buffer_size)
+
+        self._insertImageMemoryBarrier(copy_command_buffer, self._vk["compute_rgb_image"], 0, 0,
+                                       vk.VK_IMAGE_LAYOUT_UNDEFINED, vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                       vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                       subresource_range)
+
+        image_copy_region = vk.VkBufferImageCopy(
+            bufferOffset=0,
+            bufferRowLength=0, # 0 => tightly packed... could also explicitly say `self._width`
+            bufferImageHeight=0, # 0 => tightly packed... could also explicitly say `self._height`
+            imageSubresource=vk.VkImageSubresourceLayers(aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT, layerCount=1),
+            imageOffset=vk.VkOffset3D(x=0, y=0, z=0),
+            imageExtent=vk.VkExtent3D(width=self._width * 3, height=self._height, depth=1)
+        )
+        vk.vkCmdCopyImageToBuffer(copy_command_buffer, srcImage=self._vk["compute_rgb_image"],
+                                  srcImageLayout=vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                  dstBuffer=rgb_buffer["buffer"],
+                                  regionCount=1,
+                                  pRegions=[image_copy_region])
+
+        #self._insertBufferMemoryBarrier(copy_command_buffer, rgb_buffer["buffer"], vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+        #                                vk.VK_ACCESS_MEMORY_READ_BIT, vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
+        #                                vk.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, buffer_size)
+
+        vk.vkEndCommandBuffer(commandBuffer=copy_command_buffer)
+
+        self._submitWork(copy_command_buffer, self._vk["graphic_compute_queue"])
+
+        # Map image buffer memory so we can read it
+        memory_location = vk.vkMapMemory(device=self._vk["device"],
+                                         memory=rgb_buffer["memory"],
+                                         offset=0,
+                                         size=buffer_size,
+                                         flags=0)
+
+        # Convert memory to numpy array
+        rgb = np.frombuffer(memory_location, dtype=np.uint8, count=buffer_size, offset=0)
+
+        # Unmap buffer memory
+        vk.vkUnmapMemory(device=self._vk["device"], memory=rgb_buffer["memory"])
+        
+        # Clean up
+        vk.vkDestroyBuffer(device=self._vk["device"], buffer=rgb_buffer["buffer"], pAllocator=None)
+        vk.vkFreeMemory(device=self._vk["device"], memory=rgb_buffer["memory"], pAllocator=None)
+        vk.vkFreeCommandBuffers(device=self._vk["device"],
+                                commandPool=self._vk["command_pool"],
+                                commandBufferCount=1,
+                                pCommandBuffers=[copy_command_buffer])
+
+        return rgb
+
+    def _copyFramebufferToRgba(self):
+        buffer_size = self._width * self._height * 4
+
+        # Create destination buffer to copy image into
+        rgba_buffer = self._createBuffer(buffer_size, vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                         vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+
+        # Copy rendered image to host visible destination buffer
+        command_buffer_info = vk.VkCommandBufferAllocateInfo(
+            sType=vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+            commandPool=self._vk["command_pool"],
+            level=vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+            commandBufferCount=1
+        )
+        copy_command_buffer = vk.vkAllocateCommandBuffers(self._vk["device"], command_buffer_info)[0]
+        
+        buffer_begin_info = vk.VkCommandBufferBeginInfo(
+            sType=vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+            flags=0
+        )
+        vk.vkBeginCommandBuffer(commandBuffer=copy_command_buffer, pBeginInfo=buffer_begin_info)
+
+        subresource_range = vk.VkImageSubresourceRange(
+            aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT,
+            baseMipLevel=0,
+            levelCount=1,
+            baseArrayLayer=0,
+            layerCount=1
+        )
+        self._insertBufferMemoryBarrier(copy_command_buffer, rgba_buffer["buffer"], 0, vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+                                        vk.VK_PIPELINE_STAGE_TRANSFER_BIT, vk.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, buffer_size)
+
+        image_copy_region = vk.VkBufferImageCopy(
+            bufferOffset=0,
+            bufferRowLength=0, # 0 => tightly packed... could also explicitly say `self._width`
+            bufferImageHeight=0, # 0 => tightly packed... could also explicitly say `self._height`
+            imageSubresource=vk.VkImageSubresourceLayers(aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT, layerCount=1),
+            imageOffset=vk.VkOffset3D(x=0, y=0, z=0),
+            imageExtent=vk.VkExtent3D(width=self._width, height=self._height, depth=1)
+        )
+        vk.vkCmdCopyImageToBuffer(copy_command_buffer, srcImage=self._vk["color_attachment_image"],
+                                  srcImageLayout=vk.VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                  dstBuffer=rgba_buffer["buffer"],
+                                  regionCount=1,
+                                  pRegions=[image_copy_region])
+
+        self._insertBufferMemoryBarrier(copy_command_buffer, rgba_buffer["buffer"], vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+                                        vk.VK_ACCESS_MEMORY_READ_BIT, vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                        vk.VK_PIPELINE_STAGE_TRANSFER_BIT, 0, buffer_size)
+
+        vk.vkEndCommandBuffer(commandBuffer=copy_command_buffer)
+
+        self._submitWork(copy_command_buffer, self._vk["graphic_compute_queue"])
+
+        # Map image buffer memory so we can read it
+        memory_location = vk.vkMapMemory(device=self._vk["device"],
+                                         memory=rgba_buffer["memory"],
+                                         offset=0,
+                                         size=buffer_size,
+                                         flags=0)
+
+        # Convert memory to numpy array
+        rgba = np.frombuffer(memory_location, dtype=np.uint8, count=buffer_size, offset=0)
+
+        # Unmap buffer memory
+        vk.vkUnmapMemory(device=self._vk["device"], memory=rgba_buffer["memory"])
+        
+        # Clean up
+        vk.vkDestroyBuffer(device=self._vk["device"], buffer=rgba_buffer["buffer"], pAllocator=None)
+        vk.vkFreeMemory(device=self._vk["device"], memory=rgba_buffer["memory"], pAllocator=None)
+        vk.vkFreeCommandBuffers(device=self._vk["device"],
+                                commandPool=self._vk["command_pool"],
+                                commandBufferCount=1,
+                                pCommandBuffers=[copy_command_buffer])
+        """
         # Vulkan: create destination image to copy to and read the memory from
         image_info = vk.VkImageCreateInfo(
             sType=vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -1097,7 +1499,7 @@ class ExVkTriangle:
 
         vk.vkEndCommandBuffer(commandBuffer=copy_command_buffer)
         
-        self._submitWork(copy_command_buffer, self._vk["graphic_queue"])
+        self._submitWork(copy_command_buffer, self._vk["graphic_compute_queue"])
         
         # Vulkan: get layout of the image (including row pitch)
         subresource = vk.VkImageSubresource(aspectMask=vk.VK_IMAGE_ASPECT_COLOR_BIT)
@@ -1135,18 +1537,23 @@ class ExVkTriangle:
                                 commandPool=self._vk["command_pool"],
                                 commandBufferCount=1,
                                 pCommandBuffers=[copy_command_buffer])
-        
+        """
         return rgba
 
     def _getRawImage(self):
         # Copy framebuffer to RGBA array
-        rgba = self._copyFramebufferToRGBA()
+        #rgba = self._copyFramebufferToRgba()
         
         # Convert from RGBA to RGB
-        rgb_img = cv2.cvtColor(rgba.reshape((self._height, self._width, 4)), cv2.COLOR_RGBA2RGB).flatten()
+        #rgb_img = cv2.cvtColor(rgba.reshape((self._height, self._width, 4)), cv2.COLOR_RGBA2RGB).flatten()
         #rgb_img = np.delete(memory_array, np.arange(3, memory_array.size, 4))
         #rgb_img = memory_array.reshape(-1, 4)[:,:3].flatten()
-
+        
+        
+        
+        
+        rgb_img = self._copyFramebufferToRgb()
+        
         """
         # TEST -> save PPM image
         file = open("vk_image.ppm", "wb")
@@ -1159,7 +1566,7 @@ class ExVkTriangle:
 
     def _getJpegImage(self):
         # Copy framebuffer to RGBA array
-        rgba = self._copyFramebufferToRGBA()
+        rgba = self._copyFramebufferToRgba()
 
         # Convert from RGBA to BGR
         bgr_img = cv2.cvtColor(rgba.reshape((self._height, self._width, 4)), cv2.COLOR_RGBA2BGR)

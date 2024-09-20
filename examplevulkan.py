@@ -44,7 +44,6 @@ class ExVkTriangle:
         # Allow device commands to finish
         vk.vkDeviceWaitIdle(device=self._vk["device"])
 
-        """
         # Destroy old framebuffer and image views
         vk.vkDestroyFramebuffer(device=self._vk["device"], framebuffer=self._vk["framebuffer"], pAllocator=None)
 
@@ -55,6 +54,10 @@ class ExVkTriangle:
         vk.vkDestroyImageView(device=self._vk["device"], imageView=self._vk["depth_attachment_view"], pAllocator=None)
         vk.vkDestroyImage(device=self._vk["device"], image=self._vk["depth_attachment_image"], pAllocator=None)
         vk.vkFreeMemory(device=self._vk["device"], memory=self._vk["depth_attachment_memory"], pAllocator=None)
+        
+        vk.vkDestroyImageView(device=self._vk["device"], imageView=self._vk["compute_rgb_view"], pAllocator=None)
+        vk.vkDestroyImage(device=self._vk["device"], image=self._vk["compute_rgb_image"], pAllocator=None)
+        vk.vkFreeMemory(device=self._vk["device"], memory=self._vk["compute_rgb_memory"], pAllocator=None)
 
         # Set new size
         self._width = width
@@ -65,11 +68,22 @@ class ExVkTriangle:
         self._vk.update(self._createDepthAttachment(self._vk["depth_format"]))
         self._vk["framebuffer"] = self._createFramebuffer()
         
-        # Re-record the draw commands
-        vk.vkResetCommandBuffer(commandBuffer=self._vk["graphic_cmd_buffer"], flags=0)
-        self._recordDrawCommands()
+        # Create new compute image views
+        compute_image = self._createImageView(self._width * 3, self._height, vk.VK_FORMAT_R8_UNORM,
+                                              vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk.VK_IMAGE_USAGE_STORAGE_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                                              vk.VK_IMAGE_ASPECT_COLOR_BIT)
+        self._vk["compute_rgb_image"] = compute_image["image"]
+        self._vk["compute_rgb_memory"] = compute_image["memory"]
+        self._vk["compute_rgb_view"] = compute_image["view"]
         
-        """
+        # Reconfigure compute descriptor set with new framebuffer color attachment
+        self._configureComputeDescriptorSet()
+        
+        # Re-record the draw and compute commands
+        vk.vkResetCommandBuffer(commandBuffer=self._vk["graphic_cmd_buffer"], flags=0)
+        vk.vkResetCommandBuffer(commandBuffer=self._vk["compute_cmd_buffer"], flags=0)
+        self._recordDrawCommands()
+        self._recordComputeRgbaToRgbCommands()
         
         # Now ready to render again
         self._ready = True
@@ -191,6 +205,7 @@ class ExVkTriangle:
         # Set up compute shader pipeline for converting rendered image to RGB
         self._vk["compute_cmd_buffer"] = self._createCommandBuffer()
         self._vk.update(self._createComputeUniformBuffer())
+        self._configureComputeDescriptorSet()
         self._vk.update(self._createComputePipeline())
 
         # Print out all Vulkan variables
@@ -502,15 +517,26 @@ class ExVkTriangle:
                                                   vk.VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | vk.VK_IMAGE_USAGE_STORAGE_BIT | vk.VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                                   vk.VK_IMAGE_ASPECT_COLOR_BIT)
 
+        return {"compute_set": descriptor_set,
+                "compute_set_layout": layout,
+                "compute_uniform_buffer": uniform_buffer["buffer"],
+                "compute_uniform_memory": uniform_buffer["memory"],
+                "compute_uniform_memory_loc": memory_location,
+                "compute_rgb_image": uniform_image_out["image"],
+                "compute_rgb_memory": uniform_image_out["memory"],
+                "compute_rgb_view": uniform_image_out["view"]}
+
+    def _configureComputeDescriptorSet(self):
         # Configure descriptor set
+        buffer_size = glm.sizeof(glm.uvec2)
         buffer_info_ubo = vk.VkDescriptorBufferInfo(
-            buffer=uniform_buffer["buffer"],
+            buffer=self._vk["compute_uniform_buffer"],
             offset=0,
             range=buffer_size
         )
         descriptor_write_ubo = vk.VkWriteDescriptorSet(
             sType=vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            dstSet=descriptor_set,
+            dstSet=self._vk["compute_set"],
             dstBinding=0,
             dstArrayElement=0,
             descriptorType=vk.VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -524,7 +550,7 @@ class ExVkTriangle:
         )
         descriptor_write_img_in = vk.VkWriteDescriptorSet(
             sType=vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            dstSet=descriptor_set,
+            dstSet=self._vk["compute_set"],
             dstBinding=1,
             dstArrayElement=0,
             descriptorType=vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -533,12 +559,12 @@ class ExVkTriangle:
         )
         image_info_out = vk.VkDescriptorImageInfo(
             sampler=None,
-            imageView=uniform_image_out["view"],
+            imageView=self._vk["compute_rgb_view"],
             imageLayout=vk.VK_IMAGE_LAYOUT_GENERAL
         )
         descriptor_write_img_out = vk.VkWriteDescriptorSet(
             sType=vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            dstSet=descriptor_set,
+            dstSet=self._vk["compute_set"],
             dstBinding=2,
             dstArrayElement=0,
             descriptorType=vk.VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -550,15 +576,6 @@ class ExVkTriangle:
                                   pDescriptorWrites=[descriptor_write_ubo, descriptor_write_img_in, descriptor_write_img_out],
                                   descriptorCopyCount=0,
                                   pDescriptorCopies=None)
-
-        return {"compute_set": descriptor_set,
-                "compute_set_layout": layout,
-                "compute_uniform_buffer": uniform_buffer["buffer"],
-                "compute_uniform_memory": uniform_buffer["memory"],
-                "compute_uniform_memory_loc": memory_location,
-                "compute_rgb_image": uniform_image_out["image"],
-                "compute_rgb_memory": uniform_image_out["memory"],
-                "compute_rgb_view": uniform_image_out["view"]}
 
     def _createRenderPass(self, color_format, depth_format):
         # Create color attachment description

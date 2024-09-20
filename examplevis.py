@@ -116,10 +116,18 @@ class ExVisViewAdapter:
         self.area_name = name
         self._target_fps = 30
         
-        #asynchronous.create_task(self._animate())
-        asyncio.create_task(self._animate())
-        
-    def _get_metadata(self):
+        #asyncio.create_task(self._animate())
+
+    def forceRerender(self):
+        if self._streamer is not None:
+            asyncio.create_task(self._asyncRenderAndPush())
+
+    async def _asyncRenderAndPush(self):
+        self._view.renderFrame()
+        frame_data = self._view.getFrame()
+        self._streamer.push_content(self.area_name, self._getMetadata(), frame_data.data)
+
+    def _getMetadata(self):
         # Dictionary:
         #  - type:  mime-type (RGB: "image/rgb24", JPEG: "image/jpeg", MP4: "video/mp4")
         #  - codec: video codec (H264: avc1.<profile><constraints><level>  -->  e.g. "avc1.64003e")
@@ -140,28 +148,47 @@ class ExVisViewAdapter:
             key="key"
         )
 
-    async def _animate(self):
-        while True:
-            if self._streamer != None:
-                self._view.renderFrame()
-                frame_data = self._view.getFrame()
-                self._streamer.push_content(self.area_name, self._get_metadata(), frame_data.data)
-                await asyncio.sleep(1.0 / self._target_fps)
-            await asyncio.sleep(0)
+    #async def _animate(self):
+    #    while True:
+    #        if self._streamer != None:
+    #            self._view.renderFrame()
+    #            frame_data = self._view.getFrame()
+    #            self._streamer.push_content(self.area_name, self._getMetadata(), frame_data.data)
+    #            await asyncio.sleep(1.0 / self._target_fps)
+    #        await asyncio.sleep(0)
 
     def set_streamer(self, stream_manager):
         self._streamer = stream_manager
-        
+
     def update_size(self, origin, size):
         width = int(size.get("w", 400))
         height = int(size.get("h", 300))
         print(f"new size: {width}x{height}")
         self._view.setSize(width, height)
+        self.forceRerender()
         
     def on_interaction(self, origin, event):
         event_type = event["type"]
-        print(f"Event: {event_type}")
+        rerender = False
+
         if event_type == "LeftButtonPress":
-            pass
-            #frame_data = self._view.getFrame()
-            #self._streamer.push_content(self.area_name, self._get_metadata(), frame_data.data)
+            rerender = self._view.onLeftMouseButton(event["x"], event["y"], True)
+        elif event_type == "LeftButtonRelease":
+            rerender = self._view.onLeftMouseButton(event["x"], event["y"], False)
+        elif event_type == "RightButtonPress":
+            rerender = self._view.onRightMouseButton(event["x"], event["y"], True)
+        elif event_type == "RightButtonRelease":
+            rerender = self._view.onRightMouseButton(event["x"], event["y"], False)
+        elif event_type == "MouseMove":
+            rerender = self._view.onMouseMove(event["x"], event["y"])
+        elif event_type == "MouseWheel":
+            rerender = self._view.onMouseWheel(event["x"], event["y"], event["spinY"])
+        elif event_type == "KeyDown":
+            rerender = self._view.onKeyDown(event["key"]) 
+        elif event_type == "KeyUp":
+            rerender = self._view.onKeyDown(event["key"])
+
+        if rerender:
+            self._view.renderFrame()
+            frame_data = self._view.getFrame()
+            self._streamer.push_content(self.area_name, self._getMetadata(), frame_data.data)

@@ -10,9 +10,6 @@ def main():
     init_h = 600
     #vis = ExVisCircle(init_w, init_h, (196, 15, 128)) # color in BGR
     vis = ExVkTriangle(init_w, init_h)
-    #test.renderFrame()
-    #x = test._getRawImage()
-    #print(x)
     
     # Create Trame server
     server = get_server(client_type="vue2")
@@ -20,10 +17,14 @@ def main():
     ctrl = server.controller
 
     # Register RCA view with Trame controller
+    view_handler = None
     @ctrl.add("on_server_ready")
     def initRca(**kwargs):
+        nonlocal view_handler
         view_handler = ExVisViewAdapter(vis, "view")
         ctrl.rc_area_register(view_handler)
+        #print("rc_area_register: attempt render")
+        #view_handler.forceRerender()
     
     @ctrl.trigger("my_method")
     def on_method(*args, **kwargs):
@@ -31,6 +32,7 @@ def main():
         
     # Callback for encoder type change
     def uiStateEncoderUpdate(stream_encoder, **kwargs):
+        nonlocal view_handler
         print(stream_encoder)
         if stream_encoder == "rgb":
             state.active_display_mode = "raw-image"
@@ -41,6 +43,9 @@ def main():
         elif stream_encoder == "h264":
             state.active_display_mode = "media-source"
             vis.setImageType(stream_encoder)
+
+        if view_handler is not None:
+            view_handler.forceRerender()
     
     # Register callback
     state.change("stream_encoder")(uiStateEncoderUpdate)

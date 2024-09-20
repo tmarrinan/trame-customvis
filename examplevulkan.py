@@ -19,6 +19,8 @@ class ExVkTriangle:
         self._triangle_center = [self._width // 2, self._height // 2]
         self._velocity_x = 50
         self._velocity_y = 30
+        # User interaction with triangle
+        self._triangle_selected = False
         # Trame image options
         self._image_type = "rgb"
         self._jpeg_quality = 92
@@ -121,6 +123,7 @@ class ExVkTriangle:
 
         # Animate
         now = time.time_ns() / 1000000
+        """
         dt = (now - self._prev_time) / 1000
         
         dx = self._velocity_x * dt
@@ -141,6 +144,7 @@ class ExVkTriangle:
             self._velocity_y *= -1
         else:
             self._triangle_center[1] += dy
+        """
         
         # Update model, view, and projection matrices
         pos = glm.vec3(self._triangle_center[0], self._triangle_center[1], -1.5)
@@ -168,6 +172,58 @@ class ExVkTriangle:
 
         # Update render time
         self._prev_time = now
+
+    """
+    Handler for left mouse button
+    return: whether or not rerender is required
+    """
+    def onLeftMouseButton(self, mouse_x, mouse_y, pressed):
+        if pressed:
+            if self._distanceSqr2d((mouse_x, self._height - mouse_y), self._triangle_center) < (50.0 ** 2):
+                self._triangle_selected = True
+        else:
+            self._triangle_selected = False
+        return False
+
+    """
+    Handler for right mouse button
+    return: whether or not rerender is required
+    """
+    def onRightMouseButton(self, mouse_x, mouse_y, pressed):
+        return False
+
+    """
+    Handler for mouse movement
+    return: whether or not rerender is required
+    """
+    def onMouseMove(self, mouse_x, mouse_y):
+        rerender = False
+        if self._triangle_selected:
+            self._triangle_center[0] = mouse_x
+            self._triangle_center[1] = self._height - mouse_y
+            rerender = True
+        return rerender
+
+    """
+    Handler for mouse scroll wheel
+    return: whether or not rerender is required
+    """
+    def onMouseWheel(self, mouse_x, mouse_y, delta):
+        return False
+
+    """
+    Handler for keyboard key pressed down
+    return: whether or not rerender is required
+    """
+    def onKeyDown(self, key):
+        return False
+
+    """
+    Handler for keyboard key released up
+    return: whether or not rerender is required
+    """
+    def onKeyUp(self, key):
+        return False
 
     def _initVulkan(self):
         # Create Vulkan instance and find a physical rendering device
@@ -1593,6 +1649,10 @@ class ExVkTriangle:
             return encoded_img
         return None
 
+    def _distanceSqr2d(self, p0, p1):
+        dx = p1[0] - p0[0]
+        dy = p1[1] - p0[1]
+        return (dx * dx) + (dy * dy)
 
     def _messageSeverityToString(self, message_severity):
         severity_str = "UNKNOWN"
